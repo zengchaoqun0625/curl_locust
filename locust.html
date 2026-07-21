@@ -1,0 +1,1093 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>Clocust</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
+<!-- 下面这行就是新的 SVG 图标 -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>
+  <circle cx='50' cy='50' r='40' fill='%23764ba2' />
+  <text x='50' y='62' text-anchor='middle' font-size='45' fill='white' font-weight='bold'>⚡</text>
+</svg>">
+<style>
+body {
+  min-height: 100vh;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+}
+.container { max-width: 1400px; }
+.page-title { text-align:center; color:#fff; font-weight:700; }
+.card {
+  border-radius:16px;
+  border:none;
+  box-shadow:0 12px 30px rgba(0,0,0,.15);
+}
+textarea { font-family: "JetBrains Mono", monospace; font-size: 13px; }
+#result { background:#0d1117; color:#c9d1d9; }
+.step-config { opacity:.5; pointer-events:none; }
+.step-config.enabled { opacity:1; pointer-events:auto; }
+#loadChart { background:#fff; border-radius:12px; pointer-events:none; }
+.param-row { border-bottom: 1px solid #eee; padding: 8px 0; }
+.param-row:last-child { border-bottom: none; }
+#paramTable { max-height: 400px; overflow-y: auto; }
+.param-enabled { background-color: #fff3cd !important; }
+.interface-filter { margin-bottom: 10px; }
+.interface-filter select { max-width: 300px; }
+.debug-btn { margin-left: 10px; }
+.code-preview { 
+  background: #f8f9fa; 
+  padding: 10px; 
+  border-radius: 5px; 
+  font-family: monospace; 
+  font-size: 12px; 
+  max-height: 200px; 
+  overflow-y: auto;
+}
+</style>
+</head>
+
+<body>
+<div class="container mt-4">
+  <h3 class="page-title">⚡ curl → Locust 性能脚本生成器</h3>
+
+  <!-- curl 输入 -->
+  <div class="card p-3 mb-3">
+    <label class="fw-bold">curl 请求（支持多个）</label>
+    <textarea id="curl" class="form-control" rows="8" placeholder="可以粘贴多个curl命令，每个curl一行或几行"></textarea>
+    <div class="mt-2">
+      <button class="btn btn-sm btn-outline-primary" onclick="parseRequests()">解析请求</button>
+      <small class="text-muted ms-2">点击解析后会显示所有请求的参数化配置表格</small>
+      <button class="btn btn-sm btn-outline-info debug-btn" onclick="debugParams()">🔍 调试</button>
+    </div>
+  </div>
+
+  <!-- 解析出的请求参数化表格 -->
+  <div class="card p-3 mb-3" id="paramSection" style="display:none;">
+    <label class="fw-bold">🧬 参数化配置</label>
+    <div class="alert alert-info">
+      <small>选择需要参数化的接口和字段，配置Faker生成规则</small>
+    </div>
+    
+    <!-- 接口筛选 -->
+    <div class="interface-filter">
+      <label class="small fw-bold">筛选接口：</label>
+      <select id="interfaceFilter" class="form-select form-select-sm" onchange="filterByInterface(this.value)">
+        <option value="all">显示所有接口</option>
+      </select>
+    </div>
+    
+    <div id="paramTable"></div>
+    <div id="paramDebugInfo" class="mt-2"></div>
+  </div>
+
+  <!-- 配置 -->
+  <div class="card p-3">
+    <div class="row g-2">
+      <div class="col">
+        <label class="small">并发用户</label>
+        <input id="users" class="form-control" value="20" oninput="validateNumber(this)">
+      </div>
+      <div class="col">
+        <label class="small">启动速率</label>
+        <input id="rate" class="form-control" value="5" oninput="validateNumber(this)">
+      </div>
+      <div class="col">
+        <label class="small">执行时间</label>
+        <input id="duration" class="form-control" value="60" oninput="validateNumber(this)">
+      </div>
+      <div class="col">
+        <label class="small">单位</label>
+        <select id="duration_unit" class="form-select">
+          <option value="s">秒</option>
+          <option value="m">分钟</option>
+          <option value="h">小时</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- 并发模型 -->
+    <div class="mt-3">
+      <label class="small fw-bold">并发模型</label>
+      <select id="model" class="form-select">
+        <option value="fixed">固定</option>
+        <option value="step">阶梯</option>
+        <option value="ramp">斜坡</option>
+        <option value="wave">波浪</option>
+      </select>
+    </div>
+
+    <!-- 阶梯参数 -->
+    <div class="row g-2 mt-2 step-config" id="step_config">
+      <div class="col">
+        <label class="small">起始并发</label>
+        <input id="step_start" class="form-control" value="20" oninput="validateNumber(this)">
+      </div>
+      <div class="col">
+        <label class="small">每阶梯增加</label>
+        <input id="step_add" class="form-control" value="5" oninput="validateNumber(this)">
+      </div>
+      <div class="col">
+        <label class="small">间隔(秒)</label>
+        <input id="step_interval" class="form-control" value="10" oninput="validateNumber(this)">
+      </div>
+    </div>
+
+    <!-- 生成按钮 -->
+    <div class="mt-3">
+      <button class="btn btn-primary w-100" onclick="generate()">
+        🚀 生成 Locust 脚本
+      </button>
+      <button class="btn btn-sm btn-outline-secondary w-100 mt-2" onclick="testParams()">
+        📋 测试参数传递
+      </button>
+    </div>
+  </div>
+
+  <!-- 图表 -->
+  <div class="card p-3 mt-4">
+    <label class="fw-bold">📈 并发负载实时预览</label>
+    <canvas id="loadChart" height="140"></canvas>
+  </div>
+
+  <!-- 结果 -->
+  <div class="card p-3 mt-4">
+    <label class="fw-bold">生成的 Locust 脚本</label>
+    <textarea id="result" class="form-control mt-2" rows="15" readonly></textarea>
+    <div class="d-flex gap-2 mt-3">
+      <button class="btn btn-success btn-sm" onclick="copyCode()">📋 复制</button>
+      <button class="btn btn-outline-primary btn-sm" onclick="downloadCode()">⬇️ 下载</button>
+      <button class="btn btn-outline-warning btn-sm" onclick="validateCode()">✅ 验证语法</button>
+    </div>
+    <div id="validationResult" class="mt-2"></div>
+  </div>
+</div>
+
+<script>
+/* ========= 全局变量 ========= */
+let parsedRequests = [];
+let currentParams = {};
+let currentInterfaceFilter = 'all';
+let generatedCode = '';
+
+/* ========= Faker 方法列表 ========= */
+const FAKER_METHODS = [
+  {value: "name", text: "姓名"},
+  {value: "phone_number", text: "手机号"},
+  {value: "email", text: "邮箱"},
+  {value: "address", text: "地址"},
+  {value: "company", text: "公司名"},
+  {value: "job", text: "职位"},
+  {value: "random_int", text: "随机整数"},
+  {value: "random_number", text: "随机数字"},
+  {value: "uuid4", text: "UUID"},
+  {value: "word", text: "单词"},
+  {value: "sentence", text: "句子"},
+  {value: "date", text: "日期"},
+  {value: "date_time", text: "日期时间"},
+  {value: "bothify", text: "模式替换"},
+  {value: "lexify", text: "字母替换"},
+  {value: "numerify", text: "数字替换"},
+  {value: "user_name", text: "用户名"},
+  {value: "password", text: "密码"},
+  {value: "url", text: "URL"},
+  {value: "ipv4", text: "IP地址"},
+  {value: "country", text: "国家"},
+  {value: "city", text: "城市"}
+];
+
+/* ========= 简单输入校验 ========= */
+function validateNumber(input){
+  input.value = input.value.replace(/[^0-9]/g,'');
+  if(input.value==='') input.value='0';
+}
+
+/* ========= Shell 风格的分词（代替 Python shlex.split） ========= */
+function shlexSplit(cmd) {
+  // 移除末尾换行并处理多行
+  cmd = cmd.replace(/\\\n/g, ' '); // 续行符
+  const tokens = [];
+  let i = 0;
+  const len = cmd.length;
+  while (i < len) {
+    // 跳过空格
+    while (i < len && /\s/.test(cmd[i])) i++;
+    if (i >= len) break;
+    
+    if (cmd[i] === '"' || cmd[i] === "'") {
+      const quote = cmd[i];
+      let token = '';
+      i++;
+      while (i < len && cmd[i] !== quote) {
+        if (cmd[i] === '\\' && i + 1 < len) {
+          // 处理转义，保留下一个字符
+          token += cmd[i + 1];
+          i += 2;
+        } else {
+          token += cmd[i];
+          i++;
+        }
+      }
+      i++; // 跳过结束引号
+      tokens.push(token);
+    } else {
+      let token = '';
+      while (i < len && !/\s/.test(cmd[i])) {
+        if (cmd[i] === '\\' && i + 1 < len && /\s/.test(cmd[i+1])) {
+          // 转义空格不拆分
+          i++; // 跳过反斜杠
+        }
+        token += cmd[i];
+        i++;
+      }
+      tokens.push(token);
+    }
+  }
+  return tokens;
+}
+
+/* ========= 分割多个 curl 命令 ========= */
+function splitCurls(text) {
+  const blocks = [];
+  let current = [];
+  const lines = text.split('\n');
+  for (let line of lines) {
+    line = line.trimEnd();
+    if (!line || line.trimStart().startsWith('#')) continue;
+    if (line.trimStart().startsWith('curl ')) {
+      if (current.length > 0) {
+        blocks.push(current.join('\n'));
+        current = [];
+      }
+    }
+    current.push(line);
+  }
+  if (current.length > 0) blocks.push(current.join('\n'));
+  return blocks;
+}
+
+/* ========= 解析单个 curl ========= */
+function parseCurl(curlStr) {
+  curlStr = curlStr.replace(/\\"/g, '"').replace(/\\'/g, "'");
+  const tokens = shlexSplit(curlStr);
+  let method = "GET";
+  const headers = {};
+  const cookies = [];
+  let body = null;
+  let originalUrl = null;
+
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t === '-X' || t === '--request') {
+      method = tokens[++i].toUpperCase();
+    } else if (t === '-H' || t === '--header') {
+      const h = tokens[++i];
+      if (h.includes(':')) {
+        const idx = h.indexOf(':');
+        const key = h.substring(0, idx).trim();
+        let value = h.substring(idx + 1).trim();
+        value = value.replace(/\\"/g, '"').replace(/\\'/g, "'");
+        headers[key] = value;
+      }
+    } else if (t === '-b' || t === '--cookie') {
+      cookies.push(tokens[++i]);
+    } else if (['--data', '--data-raw', '-d'].includes(t)) {
+      body = tokens[++i];
+    } else if (t.startsWith('http')) {
+      originalUrl = t;
+    }
+  }
+
+  if (!originalUrl) throw new Error('未找到URL');
+
+  if (cookies.length > 0) {
+    headers['Cookie'] = cookies.join('; ');
+  }
+  if (body && method === 'GET') method = 'POST';
+
+  const urlObj = new URL(originalUrl);
+  const queryParams = {};
+  urlObj.searchParams.forEach((value, key) => {
+    queryParams[key] = value;
+  });
+
+  return {
+    method,
+    url: originalUrl,
+    parsedUrl: urlObj,
+    headers,
+    body,
+    queryParams,
+    path: urlObj.pathname || '/'
+  };
+}
+
+/* ========= 检测 body 类型 ========= */
+function detectBodyType(body, headers) {
+  if (!body) return { type: null, value: null };
+  let cleaned = body.trim();
+  cleaned = cleaned.replace(/\\"/g, '"').replace(/\\'/g, "'");
+
+  const contentType = (() => {
+    for (let key of Object.keys(headers)) {
+      if (key.toLowerCase() === 'content-type') return headers[key].toLowerCase();
+    }
+    return null;
+  })();
+
+  if (contentType) {
+    if (contentType.includes('application/json')) {
+      try { return { type: 'json', value: JSON.parse(cleaned) }; } catch(e) {
+        return tryRepairJson(cleaned);
+      }
+    } else if (contentType.includes('application/x-www-form-urlencoded')) {
+      return { type: 'data', value: cleaned };
+    } else {
+      return { type: 'data', value: cleaned };
+    }
+  }
+  return autoDetectBodyType(cleaned);
+}
+
+function tryRepairJson(str) {
+  if (!str) return { type: 'data', value: str };
+  // 尝试修复无引号的键
+  try {
+    const repaired = str.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\s*:)/g, '$1"$2"$3');
+    return { type: 'json', value: JSON.parse(repaired) };
+  } catch(e) {}
+  // 尝试单引号替换
+  try {
+    const repaired = str.replace(/'/g, '"');
+    return { type: 'json', value: JSON.parse(repaired) };
+  } catch(e) {}
+  return { type: 'data', value: str };
+}
+
+function autoDetectBodyType(str) {
+  if (!str) return { type: null, value: null };
+  const trimmed = str.trim();
+  if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+    try { return { type: 'json', value: JSON.parse(trimmed) }; } catch(e) {
+      return tryRepairJson(trimmed);
+    }
+  }
+  if (trimmed.includes('=') && !trimmed.startsWith('http')) {
+    return { type: 'data', value: trimmed };
+  }
+  return { type: 'data', value: trimmed };
+}
+
+/* ========= Faker 表达式生成 ========= */
+const FAKER_METHOD_MAP = {
+  'random_int': 'fake.random_int(min=1, max=10000)',
+  'random_number': 'fake.random_number(digits=6)',
+  'uuid4': 'str(fake.uuid4())',
+  'bothify': 'fake.bothify(text=\'??##??\')',
+  'lexify': 'fake.lexify(text=\'???\')',
+  'numerify': 'fake.numerify(text=\'###\')',
+  'date': 'fake.date()',
+  'date_time': 'fake.date_time()',
+  'password': 'fake.password(length=12)',
+  'user_name': 'fake.user_name()',
+  'url': 'fake.url()',
+  'ipv4': 'fake.ipv4()',
+};
+
+function generateFakerExpr(method) {
+  if (FAKER_METHOD_MAP[method]) return FAKER_METHOD_MAP[method];
+  return `fake.${method}()`;
+}
+
+/* ========= 参数化应用函数 ========= */
+// 标记 Faker 表达式的包装对象
+class FakerExpr {
+  constructor(expr) { this.expr = expr; }
+}
+
+function applyParametrize(obj, rules, basePath = '') {
+  if (!rules) return obj;
+  if (basePath in rules) {
+    const rule = rules[basePath];
+    if (rule.enabled && rule.method) {
+      return new FakerExpr(generateFakerExpr(rule.method));
+    }
+  }
+  if (typeof obj === 'object' && obj !== null) {
+    if (Array.isArray(obj)) {
+      return obj.map((item, i) => {
+        const path = basePath ? `${basePath}[${i}]` : `[${i}]`;
+        return applyParametrize(item, rules, path);
+      });
+    } else {
+      const result = {};
+      for (let key of Object.keys(obj)) {
+        const path = basePath ? `${basePath}.${key}` : key;
+        result[key] = applyParametrize(obj[key], rules, path);
+      }
+      return result;
+    }
+  }
+  return obj;
+}
+
+function applyParametrizeFormData(formData, params, reqIndex) {
+  try {
+    const result = {};
+    const pairs = formData.split('&');
+    for (let pair of pairs) {
+      if (!pair.includes('=')) continue;
+      const idx = pair.indexOf('=');
+      const key = pair.substring(0, idx);
+      const value = pair.substring(idx + 1);
+      const fullKey = `${reqIndex}.data.${key}`;
+      if (params && fullKey in params) {
+        const rule = params[fullKey];
+        if (rule.enabled && rule.method) {
+          result[key] = new FakerExpr(generateFakerExpr(rule.method));
+        } else {
+          result[key] = value;
+        }
+      } else {
+        result[key] = value;
+      }
+    }
+    return result;
+  } catch(e) {
+    return formData;
+  }
+}
+
+/* ========= 格式化 Python 值 ========= */
+function formatPythonValue(value, indent = 12) {
+  if (value instanceof FakerExpr) {
+    return value.expr;
+  }
+  if (typeof value === 'string' && value.startsWith('fake.')) return value;
+  
+  if (typeof value === 'object' && value !== null) {
+    if (Array.isArray(value)) {
+      const items = value.map(v => formatPythonValue(v, indent + 4));
+      const singleLine = '[' + items.join(', ') + ']';
+      if (singleLine.length <= 80 - indent) return singleLine;
+      const nextIndent = ' '.repeat(indent + 4);
+      const currentIndent = ' '.repeat(indent);
+      return '[\n' + items.map(it => nextIndent + it).join(',\n') + '\n' + currentIndent + ']';
+    } else {
+      const entries = Object.entries(value);
+      const formatted = entries.map(([k, v]) => {
+        const formattedKey = /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(k) ? k : JSON.stringify(k);
+        return `${formattedKey}: ${formatPythonValue(v, indent + 4)}`;
+      });
+      const singleLine = '{' + formatted.join(', ') + '}';
+      if (singleLine.length <= 80 - indent) return singleLine;
+      const nextIndent = ' '.repeat(indent + 4);
+      const currentIndent = ' '.repeat(indent);
+      return '{\n' + formatted.map(f => nextIndent + f).join(',\n') + '\n' + currentIndent + '}';
+    }
+  }
+  
+  if (typeof value === 'string') {
+    // 转义处理
+    if (value.includes('"')) {
+      if (!value.includes("'")) return `'${value.replace(/\\/g, '\\\\')}'`;
+      if (!value.includes('"""')) return `"""${value}"""`;
+    }
+    return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value === null) return 'None';
+  return String(value);
+}
+
+/* ========= 生成 Locust 脚本（核心） ========= */
+function genLocustMulti(curls, users, rate, duration, durationUnit, hostOverride, model, stepStart, stepAdd, stepInterval, params) {
+  // 时间换算
+  let durationSeconds = parseInt(duration);
+  if (durationUnit === 'm') durationSeconds *= 60;
+  else if (durationUnit === 'h') durationSeconds *= 3600;
+  users = Math.max(1, parseInt(users));
+  rate = Math.max(1, parseInt(rate));
+
+  // 解析所有 curl
+  const parsed = [];
+  for (let curl of curls) {
+    try {
+      const { method, url, parsedUrl, headers, body, queryParams, path } = parseCurl(curl);
+      const { type: bodyType, value: bodyValue } = detectBodyType(body, headers);
+      parsed.push({ method, url, parsedUrl, headers, body, bodyType, bodyValue, queryParams, path });
+    } catch(e) {
+      parsed.push({ error: e.message });
+    }
+  }
+
+  // 确定 host
+  let finalHost = null;
+  for (let req of parsed) {
+    if (req.parsedUrl) {
+      const host = `${req.parsedUrl.protocol}//${req.parsedUrl.host}`;
+      finalHost = hostOverride || host;
+      break;
+    }
+  }
+  if (!finalHost) finalHost = 'http://localhost';
+
+  // 生成任务函数
+  const tasks = [];
+  for (let i = 0; i < parsed.length; i++) {
+    const req = parsed[i];
+    if (req.error) {
+      tasks.push(`\n    @task\n    def api_${i}(self):\n        raise Exception("${req.error}")\n`);
+      continue;
+    }
+    const method = req.method;
+    const path = req.parsedUrl.pathname || '/';
+    let apiName = req.path;
+    if (apiName.length > 50) apiName = apiName.slice(0, 47) + '...';
+    
+    const args = [];
+    
+    // 查询参数
+    if (req.queryParams && Object.keys(req.queryParams).length > 0) {
+      const processedParams = {};
+      for (let key of Object.keys(req.queryParams)) {
+        const paramKey = `${i}.params.${key}`;
+        if (params && paramKey in params) {
+          const rule = params[paramKey];
+          processedParams[key] = (rule.enabled && rule.method) ? new FakerExpr(generateFakerExpr(rule.method)) : req.queryParams[key];
+        } else {
+          processedParams[key] = req.queryParams[key];
+        }
+      }
+      args.push(`params=${formatPythonValue(processedParams)}`);
+    }
+    
+    // headers
+    if (req.headers && Object.keys(req.headers).length > 0) {
+      args.push(`headers=${formatPythonValue(req.headers)}`);
+    }
+    
+    // body
+    if (req.body && method.toUpperCase() !== 'GET') {
+      if (req.bodyType === 'json' && req.bodyValue) {
+        const jsonRules = {};
+        if (params) {
+          for (let key of Object.keys(params)) {
+            if (key.startsWith(`${i}.json.`)) {
+              jsonRules[key.replace(`${i}.json.`, '')] = params[key];
+            }
+          }
+        }
+        const processed = applyParametrize(req.bodyValue, jsonRules);
+        args.push(`json=${formatPythonValue(processed)}`);
+      } else if (req.bodyType === 'data') {
+        const processed = applyParametrizeFormData(req.bodyValue, params, i);
+        args.push(`data=${formatPythonValue(processed)}`);
+      } else {
+        args.push(`data="${req.body}"`);
+      }
+    }
+    
+    args.push(`name="${apiName}"`);
+    args.push('timeout=10');
+    
+    tasks.push(`
+    @task
+    def api_${i}(self):
+        """${method} ${apiName}"""
+        self.client.${method.toLowerCase()}(
+            "${path}",
+            ${args.join(',\n            ')}
+        )
+`);
+  }
+
+  // 导入与 shape
+  let importLine = 'from locust import HttpUser, task, between';
+  if (model !== 'fixed') importLine += ', LoadTestShape';
+  importLine += '\nfrom faker import Faker\nfake = Faker(\'zh_CN\')';
+  
+  let shapeCode = '';
+  let runCmd = '';
+  let configInfo = '';
+  let modeName = '固定并发';
+  
+  const enabledCount = params ? Object.values(params).filter(r => r.enabled).length : 0;
+
+  if (model === 'fixed') {
+    runCmd = `locust -f locustfile.py --headless --host=${finalHost} -u ${users} -r ${rate} -t ${duration}${durationUnit} --csv=result --html report.html`;
+    configInfo = `# - 并发用户数: ${users}\n# - 启动速率: ${rate} 用户/秒\n# - 执行时间: ${duration}${durationUnit}`;
+  } else if (model === 'step') {
+    modeName = '阶梯并发';
+    shapeCode = `
+class StepLoadShape(LoadTestShape):
+    step_time = ${stepInterval}
+    step_load = ${stepAdd}
+    start_users = ${stepStart}
+    spawn_rate = ${rate}
+    time_limit = ${durationSeconds}
+
+    def tick(self):
+        t = self.get_run_time()
+        if t > self.time_limit:
+            return None
+        users = self.start_users + int(t // self.step_time) * self.step_load
+        users = min(users, 10000)
+        return users, self.spawn_rate
+`;
+    runCmd = `locust -f locustfile.py --headless --host=${finalHost} --csv=result --html report.html`;
+  } else if (model === 'ramp') {
+    modeName = '线性斜坡';
+    shapeCode = `
+class RampLoadShape(LoadTestShape):
+    spawn_rate = ${rate}
+    time_limit = ${durationSeconds}
+
+    def tick(self):
+        t = self.get_run_time()
+        if t > self.time_limit:
+            return None
+        users = ${Math.max(1, rate)} + (${Math.max(1, users)} - ${Math.max(1, rate)}) * (t / self.time_limit)
+        return int(users), self.spawn_rate
+`;
+    runCmd = `locust -f locustfile.py --headless --host=${finalHost} --csv=result --html report.html`;
+  } else if (model === 'wave') {
+    modeName = '波浪并发';
+    const waveMin = Math.max(1, Math.floor(users * 0.5));
+    const waveMax = Math.max(waveMin + 1, Math.floor(users * 1.5));
+    const wavePeriod = Math.max(10, Math.floor(durationSeconds / 4));
+    shapeCode = `
+import math
+
+class WaveLoadShape(LoadTestShape):
+    min_users = ${waveMin}
+    max_users = ${waveMax}
+    period = ${wavePeriod}
+    spawn_rate = ${rate}
+    time_limit = ${durationSeconds}
+
+    def tick(self):
+        t = self.get_run_time()
+        if t > self.time_limit:
+            return None
+        mid = (self.min_users + self.max_users) / 2
+        amp = (self.max_users - self.min_users) / 2
+        users = mid + amp * math.sin(2 * math.pi * t / self.period)
+        return int(max(0, users)), self.spawn_rate
+`;
+    runCmd = `locust -f locustfile.py --headless --host=${finalHost} --csv=result --html report.html`;
+  }
+
+  return `${importLine}
+
+${shapeCode}
+
+class ApiUser(HttpUser):
+    host = "${finalHost}"
+    wait_time = between(1, 2)
+${tasks.join('')}
+
+# ===================== 压测运行说明 =====================
+# 📊 核心信息
+# - 接口数量: ${curls.length} 个
+# - 压测模式: ${modeName}
+${configInfo}
+# - 参数化字段: ${enabledCount} 个字段使用Faker生成
+# - Faker语言: 中文(zh_CN)
+
+# 🚀 运行命令
+# 1️⃣ 无头模式（自动运行，生成报表）
+# ${runCmd}
+
+# 2️⃣ Web UI 模式（推荐）
+# locust -f locustfile.py --host ${finalHost}
+
+# 📈 查看结果
+# - CSV: result_stats.csv / result_requests.csv
+# - HTML: report.html
+
+# 💡 提示
+# 1. 确保已安装依赖
+# 2. 首次运行前建议测试脚本: python -m py_compile locustfile.py
+# 3. 参数化字段会在每次请求时动态生成新数据
+`;
+}
+
+/* ========= 前端交互函数 ========= */
+function parseRequests() {
+  const curlText = document.getElementById('curl').value;
+  const curls = splitCurls(curlText);
+  if (curls.length === 0) {
+    alert('未检测到有效的 curl 命令');
+    return;
+  }
+
+  parsedRequests = [];
+  const allParams = {};
+  for (let i = 0; i < curls.length; i++) {
+    try {
+      const parsed = parseCurl(curls[i]);
+      const bodyInfo = detectBodyType(parsed.body, parsed.headers);
+      const reqInfo = {
+        index: i,
+        method: parsed.method,
+        url: parsed.url,
+        parsedUrl: parsed.parsedUrl,
+        headers: parsed.headers,
+        body: parsed.body,
+        bodyType: bodyInfo.type,
+        bodyValue: bodyInfo.value,
+        queryParams: parsed.queryParams,
+        path: parsed.path
+      };
+      parsedRequests.push(reqInfo);
+
+      // 收集可参数化字段
+      if (parsed.queryParams) {
+        for (let key of Object.keys(parsed.queryParams)) {
+          const paramKey = `${i}.params.${key}`;
+          allParams[paramKey] = { field: key, type: 'query', value: String(parsed.queryParams[key]), enabled: false, method: '' };
+        }
+      }
+      // JSON 字段不在这里收集，前端 flattenObject 会处理
+      if (bodyInfo.type === 'data' && bodyInfo.value) {
+        const pairs = bodyInfo.value.split('&');
+        for (let pair of pairs) {
+          if (!pair.includes('=')) continue;
+          const idx = pair.indexOf('=');
+          const key = pair.substring(0, idx);
+          const value = pair.substring(idx + 1);
+          const paramKey = `${i}.data.${key}`;
+          allParams[paramKey] = { field: key, type: 'form', value, enabled: false, method: '' };
+        }
+      }
+    } catch(e) {
+      parsedRequests.push({ index: i, error: e.message });
+    }
+  }
+
+  // 合并旧配置
+  for (let key of Object.keys(allParams)) {
+    if (currentParams[key]) {
+      allParams[key].enabled = currentParams[key].enabled || false;
+      allParams[key].method = currentParams[key].method || '';
+    }
+  }
+  currentParams = allParams;
+  
+  document.getElementById('paramSection').style.display = 'block';
+  updateInterfaceFilter();
+  renderParamTable();
+  debugParams();
+}
+
+/* ========= 接口筛选下拉框 ========= */
+function updateInterfaceFilter() {
+  const sel = document.getElementById('interfaceFilter');
+  sel.innerHTML = '<option value="all">显示所有接口</option>';
+  parsedRequests.forEach((req, idx) => {
+    if (req.error) return;
+    sel.innerHTML += `<option value="${idx}">${req.method} ${req.path} (接口${idx})</option>`;
+  });
+  sel.value = currentInterfaceFilter;
+}
+
+function filterByInterface(val) {
+  currentInterfaceFilter = val;
+  renderParamTable();
+}
+
+/* ========= 渲染参数表格 ========= */
+function renderParamTable() {
+  let html = '<table class="table table-sm table-bordered"><thead><tr><th>接口</th><th>字段位置</th><th>字段名</th><th>路径</th><th>当前值/示例</th><th>Faker方法</th><th>启用</th></tr></thead><tbody>';
+  let hasRows = false;
+
+  parsedRequests.forEach((req, reqIndex) => {
+    if (currentInterfaceFilter !== 'all' && String(reqIndex) !== currentInterfaceFilter) return;
+    if (req.error) {
+      html += `<tr><td colspan="7" class="text-danger">接口${reqIndex}: ${req.error}</td></tr>`;
+      return;
+    }
+    
+    const fields = [];
+    // Query 参数
+    if (req.queryParams && Object.keys(req.queryParams).length) {
+      for (let key of Object.keys(req.queryParams)) {
+        fields.push({
+          type: 'query',
+          key: key,
+          path: key,
+          value: req.queryParams[key],
+          paramKey: `${reqIndex}.params.${key}`,
+        });
+      }
+    }
+    // JSON body (扁平化)
+    if (req.bodyType === 'json' && req.bodyValue) {
+      flattenObject(req.bodyValue, fields, 'json', '', reqIndex);
+    }
+    // Form data
+    if (req.bodyType === 'data' && req.bodyValue) {
+      try {
+        const pairs = req.bodyValue.split('&');
+        for (let pair of pairs) {
+          if (!pair.includes('=')) continue;
+          const idx = pair.indexOf('=');
+          const key = pair.substring(0, idx);
+          const value = pair.substring(idx + 1);
+          fields.push({
+            type: 'form',
+            key: key,
+            path: key,
+            value,
+            paramKey: `${reqIndex}.data.${key}`,
+          });
+        }
+      } catch(e) {
+        fields.push({
+          type: 'raw',
+          key: 'raw_data',
+          path: 'raw_data',
+          value: req.bodyValue.slice(0, 100),
+          paramKey: `${reqIndex}.raw_data`,
+        });
+      }
+    }
+    
+    fields.forEach(field => {
+      hasRows = true;
+      const currentParam = currentParams[field.paramKey] || {};
+      const isEnabled = currentParam.enabled || false;
+      const selectedMethod = currentParam.method || '';
+      
+      html += `<tr class="param-row ${isEnabled ? 'param-enabled' : ''}" id="row-${field.paramKey.replace(/\./g, '-')}">`;
+      html += `<td><small>${req.method} ${req.path}</small></td>`;
+      html += `<td><code>${field.type}</code></td>`;
+      html += `<td><code>${field.key}</code></td>`;
+      html += `<td><small>${field.path}</small></td>`;
+      html += `<td><small>${field.value.length > 20 ? field.value.substring(0,20)+'...' : field.value}</small></td>`;
+      html += '<td><select class="form-select form-select-sm faker-select" onchange="onFakerSelectChange(\'' + field.paramKey + '\', this.value)">';
+      html += '<option value="">-- 选择 --</option>';
+      FAKER_METHODS.forEach(m => {
+        html += `<option value="${m.value}" ${selectedMethod === m.value ? 'selected' : ''}>${m.text}</option>`;
+      });
+      html += '</select></td>';
+      html += `<td><input type="checkbox" class="form-check-input param-enable" onchange="onParamEnableChange('${field.paramKey}', this.checked)" ${isEnabled ? 'checked' : ''}></td>`;
+      html += '</tr>';
+    });
+  });
+
+  if (!hasRows) {
+    html += '<tr><td colspan="7" class="text-center">该接口没有可参数化的字段</td></tr>';
+  }
+  html += '</tbody></table>';
+  document.getElementById('paramTable').innerHTML = html;
+}
+
+function flattenObject(obj, fields, type, prefix, reqIndex) {
+  if (obj === null || obj === undefined) return;
+  if (Array.isArray(obj)) {
+    obj.forEach((item, idx) => {
+      const newPrefix = prefix ? `${prefix}[${idx}]` : `[${idx}]`;
+      const paramKey = `${reqIndex}.json.${newPrefix}`;
+      if (typeof item === 'object' && item !== null) {
+        flattenObject(item, fields, type, newPrefix, reqIndex);
+      } else {
+        fields.push({ type, key: `[${idx}]`, path: newPrefix, value: String(item), paramKey });
+      }
+    });
+  } else if (typeof obj === 'object') {
+    Object.entries(obj).forEach(([key, value]) => {
+      const newPrefix = prefix ? `${prefix}.${key}` : key;
+      const paramKey = `${reqIndex}.json.${newPrefix}`;
+      if (typeof value === 'object' && value !== null) {
+        flattenObject(value, fields, type, newPrefix, reqIndex);
+      } else {
+        fields.push({ type, key, path: newPrefix, value: String(value), paramKey });
+      }
+    });
+  }
+}
+
+function onFakerSelectChange(paramKey, value) {
+  if (!currentParams[paramKey]) currentParams[paramKey] = { enabled: false, method: '' };
+  currentParams[paramKey].method = value;
+  currentParams[paramKey].enabled = true;
+  const row = document.getElementById('row-' + paramKey.replace(/\./g, '-'));
+  if (row) {
+    row.classList.add('param-enabled');
+    row.querySelector('.param-enable').checked = true;
+  }
+  debugParams();
+}
+
+function onParamEnableChange(paramKey, enabled) {
+  if (!currentParams[paramKey]) currentParams[paramKey] = { enabled: false, method: '' };
+  currentParams[paramKey].enabled = enabled;
+  if (!enabled) {
+    currentParams[paramKey].method = '';
+    const row = document.getElementById('row-' + paramKey.replace(/\./g, '-'));
+    if (row) {
+      row.classList.remove('param-enabled');
+      row.querySelector('.faker-select').value = '';
+    }
+  }
+  debugParams();
+}
+
+function debugParams() {
+  const enabledCount = Object.values(currentParams).filter(p => p.enabled).length;
+  document.getElementById('paramDebugInfo').innerHTML = `
+    <div class="code-preview">
+      <strong>参数化统计：</strong>总配置 ${Object.keys(currentParams).length} 个，已启用 ${enabledCount} 个
+    </div>`;
+}
+
+function testParams() {
+  const enabledCount = Object.values(currentParams).filter(p => p.enabled).length;
+  alert(`当前已启用 ${enabledCount} 个参数化字段。\n点击“生成脚本”即可在生成的代码中看到效果。`);
+}
+
+/* ========= 生成脚本 ========= */
+function generate() {
+  const paramConfigs = {};
+  for (let key of Object.keys(currentParams)) {
+    const cfg = currentParams[key];
+    if (cfg && (cfg.enabled || cfg.method)) {
+      paramConfigs[key] = { enabled: cfg.enabled || false, method: cfg.method || '' };
+    }
+  }
+
+  const curls = splitCurls(document.getElementById('curl').value);
+  if (curls.length === 0) {
+    alert('请先粘贴 curl 命令');
+    return;
+  }
+
+  generatedCode = genLocustMulti(
+    curls,
+    document.getElementById('users').value,
+    document.getElementById('rate').value,
+    document.getElementById('duration').value,
+    document.getElementById('duration_unit').value,
+    null,
+    document.getElementById('model').value,
+    document.getElementById('step_start').value,
+    document.getElementById('step_add').value,
+    document.getElementById('step_interval').value,
+    paramConfigs
+  );
+
+  document.getElementById('result').value = generatedCode;
+  document.getElementById('validationResult').innerHTML = 
+    '<div class="alert alert-success small">✅ 生成成功！已启用 ' + Object.values(paramConfigs).filter(p => p.enabled).length + ' 个参数化字段</div>';
+}
+
+/* ========= 验证语法（简单检查 Python 关键结构） ========= */
+function validateCode() {
+  if (!generatedCode) {
+    document.getElementById('validationResult').innerHTML = '<div class="alert alert-warning">⚠️ 请先生成代码</div>';
+    return;
+  }
+  // 简单检查是否包含基本元素
+  if (generatedCode.includes('class ApiUser') && generatedCode.includes('def api_')) {
+    document.getElementById('validationResult').innerHTML = '<div class="alert alert-success">✅ 脚本结构基本正确（建议在本地用 python -m py_compile 验证）</div>';
+  } else {
+    document.getElementById('validationResult').innerHTML = '<div class="alert alert-danger">❌ 脚本可能不完整，请检查 curl 输入</div>';
+  }
+}
+
+/* ========= 复制 / 下载 ========= */
+function copyCode() {
+  if (!generatedCode) return;
+  navigator.clipboard.writeText(generatedCode);
+  alert('已复制到剪贴板');
+}
+
+function downloadCode() {
+  if (!generatedCode) return;
+  const blob = new Blob([generatedCode], { type: 'text/x-python' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'locustfile.py';
+  a.click();
+}
+
+/* ========= 并发模型图表 ========= */
+let chart;
+function totalSeconds() {
+  let d = +document.getElementById('duration').value || 60;
+  const unit = document.getElementById('duration_unit').value;
+  if (unit === 'm') d *= 60;
+  if (unit === 'h') d *= 3600;
+  return d;
+}
+
+function buildSeries() {
+  const pts = 40;
+  const t = totalSeconds();
+  const base = +document.getElementById('users').value || 1;
+  const start = +document.getElementById('step_start').value || base;
+  const add = +document.getElementById('step_add').value || 1;
+  const interval = +document.getElementById('step_interval').value || 10;
+  const model = document.getElementById('model').value;
+
+  const labels = [];
+  const data = [];
+  for (let i = 0; i <= pts; i++) {
+    const sec = t / pts * i;
+    labels.push(sec.toFixed(0) + 's');
+    let v = base;
+    if (model === 'step') {
+      v = start + Math.floor(sec / interval) * add;
+    } else if (model === 'ramp') {
+      v = base + (sec / t) * base;
+    } else if (model === 'wave') {
+      v = base + Math.sin(sec / t * 2 * Math.PI) * base / 2;
+    }
+    data.push(Math.max(0, Math.round(v)));
+  }
+  return { labels, data };
+}
+
+function renderChart() {
+  const s = buildSeries();
+  const peak = Math.max(...s.data);
+  const last = s.data[s.data.length - 1];
+  if (chart) chart.destroy();
+  chart = new Chart(document.getElementById('loadChart'), {
+    type: 'line',
+    data: {
+      labels: s.labels,
+      datasets: [
+        { label: '并发用户', data: s.data, fill: true },
+        { label: '峰值', data: s.data.map(() => peak), borderDash: [5,5], pointRadius: 0 },
+        { label: '最终', data: s.data.map(() => last), borderDash: [2,2], pointRadius: 0 }
+      ]
+    },
+    options: { responsive: true, plugins: { legend: { position: 'top' } } }
+  });
+}
+
+/* ========= 事件绑定与初始化 ========= */
+['users','duration','step_start','step_add','step_interval'].forEach(id => {
+  document.getElementById(id).addEventListener('input', renderChart);
+});
+document.getElementById('duration_unit').addEventListener('change', renderChart);
+document.getElementById('model').addEventListener('change', () => {
+  document.getElementById('step_config').classList.toggle('enabled', document.getElementById('model').value === 'step');
+  renderChart();
+});
+
+renderChart();
+</script>
+
+<!-- 1. jQuery（必须放在播放器前面） -->
+<script src="https://cdn.bootcdn.net/ajax/libs/jquery/3.7.1/jquery.min.js"></script>
+
+<!-- 2. 音乐播放器（不加 defer，不加 async） -->
+<script type="text/javascript" id="myhk" src="https://myhkw.cn/api/player/171634017499" key="171634017499" m="1"></script>
+
+</script>
+</body>
+</html>
